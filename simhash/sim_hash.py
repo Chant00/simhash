@@ -12,7 +12,7 @@ import numbers
 
 from .key_funcs import get_keys0
 from .tokenizer import tokenize
-from .storage import Storage, MemoryStorage, RedisStorage
+from .storage import Storage, MemoryStorage, RedisStorage, MemoryMapStorage
 
 F = 64  # `f` is the dimensions of fingerprints
 K = 7  # `k` is the tolerance
@@ -142,18 +142,24 @@ def to_simhash(text):
 
 class SimhashIndex(object):
 
-    def __init__(self, objs=None, storage: Storage = MemoryStorage, key_pre='',
-                 f=F, k=K, log=None, key_func=get_keys0):
-        """
-        优化：存储上其实可以不存obj_id，只存储simhash值，得到hash值后再去查表得到id和内容。能节省一定的存储和计算量。
+    def __init__(self, objs=None,
+                 storage: Storage = MemoryStorage(),
+                 map_storage: Storage = MemoryMapStorage(),
+                 key_pre='',
+                 f=F, k=K, log=None, key_func=get_keys0, with_id=True):
+        """split simhash into keys, index them into buckets,
+        provide the function to find near duplications.
 
         :param objs: a list of (obj_id, simhash)
             obj_id is a string, simhash is an instance of Simhash
+        :param map_storage: {Storage} the storage for simhash -> obj_id map
         :param storage: {Storage} the storage backend
-        :param key_pre: {str} prefix to add ahead of the key, when you're dealing with more than  redis storage
-        :param f:  the same with the one for Simhash
-        :param k: the tolerance
-        :param log: logger
+        :param key_pre: {str} prefix to add ahead of the key,
+            when you're dealing with more than 2 corpus with redis storage,
+            you'll need this prefix to prevent the mixture of the keys
+        :param f: {int} the same with the one for Simhash
+        :param k: {int} the tolerance
+        :param log: {logger}
         :param key_func: function for keys generation
             `key_func` accepts a Simhash and returns a list of keys,
             which is split from Simhash.value by bits
@@ -162,13 +168,15 @@ class SimhashIndex(object):
         self.f = f
         self.key_pre = key_pre
         self.get_keys = lambda x: key_func(x, f, k, key_pre)
+        self.storage = storage
+        if with_id:
+            self.with_id = with_id
+            self.hash2id = map_storage
 
         if log is None:
             self.log = logging.getLogger("simhash")
         else:
             self.log = log
-
-        self.storage = storage
 
         if objs:
             count = len(objs)
@@ -183,7 +191,8 @@ class SimhashIndex(object):
         """find one near duplication under the distance tolerance k
 
         :param simhash: an instance of Simhash
-        :return: a tuple of (obj_id, distance)
+        :return: return a (obj_id, distance) tuple if self.with_id set
+            to True else return a (hex simhash, distance) tuple
         """
         assert simhash.f == self.f
 
@@ -194,25 +203,28 @@ class SimhashIndex(object):
                 self.log.warning('Big bucket found. key:%s, len:%s', key,
                                  len(dups))
 
-            for dup in dups:
-                sim2, obj_id = dup.split(',', 1)
-                sim2 = Simhash(int(sim2, 16), self.f)
-
-                d = simhash.distance(sim2)
+            for dup_hex in dups:
+                dup_hash = Simhash(int(dup_hex, 16), self.f)
+                d = simhash.distance(dup_hash)
                 if d <= self.k:
-                    return int(obj_id), d
+                    if self.with_id:
+                        return int(self.hash2id.get(dup_hex)), d
+                    else:
+                        return dup_hash, d
         return None, None
 
     def get_near_dups(self, simhash):
-        """find all near duplication under the distance tolerance k
+        """find all near duplication under the distance tolerance k.
+        use this function when you're dealing with historical data
 
         :param simhash: an instance of Simhash
-        :return: a list of (obj_id, distance) tuple
+        :return: return a list of (obj_id, distance) tuple if self.with_id set
+            to True else return a list of (hex simhash, distance) tuple
         """
         assert simhash.f == self.f
 
-        unique = set()
-        id_score = []
+        unique = set()  # to distinct the result
+        id_dist = []  # [(id, distance),...]
 
         for key in self.get_keys(simhash):
             dups = self.storage.get(key)
@@ -221,31 +233,35 @@ class SimhashIndex(object):
                 self.log.warning('Big bucket found. key:%s, len:%s', key,
                                  len(dups))
 
-            for dup in dups:
-                sim2, obj_id = dup.split(',', 1)
-                sim2 = Simhash(int(sim2, 16), self.f)
+            for dup_hex in dups:
+                dup_hash = Simhash(int(dup_hex, 16), self.f)
 
-                d = simhash.distance(sim2)
+                d = simhash.distance(dup_hash)
                 if d <= self.k:
-                    if obj_id not in unique:
-                        unique.add(obj_id)
-                        id_score.append((int(obj_id), d))
-        return id_score
+                    if dup_hex not in unique:
+                        unique.add(dup_hex)
+                        if self.with_id:
+                            id_dist.append((int(self.hash2id.get(dup_hex)), d))
+                        else:
+                            id_dist.append((dup_hex, d))
+        return id_dist
 
     def get_near_dups2(self, simhash, cur_id):
-        """find all near duplication under the distance tolerance k,
-        and add current simhash to the index backend.
-        查询相似帖, 且将当前帖子id及simhash值存入buckets
+        """find all near duplication under the distance tolerance k, meanwhile,
+        add current simhash to the storage.
+        use this function when you're dealing with real-time query
 
         :param simhash: {Simhash}
         :param cur_id: {int or str} 当前查询帖子的id
-        :return: a list of (obj_id, distance) tuple
+        :return: return a list of (obj_id, distance) tuple if self.with_id set
+            to True else return a list of (hex simhash, distance) tuple
         """
         assert simhash.f == self.f
 
-        id_distance = list()  # [(id, distance),...]
-        unique = {str(cur_id)}  # 用于去重，首先去掉当前查询贴
+        id_dist = list()  # [(id, distance),...]
+        unique = set()  # to distinct the result
         flag = 1
+
         for key in self.get_keys(simhash):
             dups = self.storage.get(key)
             self.log.debug('key:%s', key)
@@ -253,44 +269,44 @@ class SimhashIndex(object):
                 self.log.warning(
                     f'Big bucket found. key:{key}, len:{len(dups)}')
 
-            for dup in dups:
-                sim2, obj_id = dup.split(',', 1)
-                sim2 = Simhash(int(sim2, 16), self.f)
+            for dup_hex in dups:
+                dup_hash = Simhash(int(dup_hex, 16), self.f)
+                d = simhash.distance(dup_hash)
 
-                d = simhash.distance(sim2)
                 if d <= self.k:
-                    if obj_id not in unique:
-                        unique.add(obj_id)
-                        id_distance.append((int(obj_id), d))
-                    # 发现完全重复的帖子，则不添加当前帖子的simhash到redis
-                    if d == 0 and obj_id != cur_id:
+                    if dup_hex not in unique:
+                        unique.add(dup_hex)
+                        if self.with_id:
+                            id_dist.append((int(self.hash2id.get(dup_hex)), d))
+                        else:
+                            id_dist.append((dup_hex, d))
+                    if d == 0:
                         flag = 0
-        # 将当前帖子id及simhash值存入redis
+        # No completely duplicate simhash found,
+        # adding current simhash to the storage
         if flag == 1:
             self.add(cur_id, simhash)
-        return id_distance
+        return id_dist
 
     def add(self, obj_id, simhash):
-        """
-        `obj_id` is a string
-        `simhash` is an instance of Simhash
-        """
-        assert simhash.f == self.f
+        """adding the simhash to the storage"""
+        assert simhash.f == self.f, f"index's f={self.f},simhash's f={simhash.f}"
 
+        v = '%x' % simhash.value  # format to hex
+        if self.with_id:
+            self.hash2id.add(v, obj_id)
         for key in self.get_keys(simhash):
-            v = '%x,%s' % (simhash.value, obj_id)
             self.storage.add(key, v)
 
-    def delete(self, obj_id, simhash):
-        """
-        `obj_id` is a string
-        `simhash` is an instance of Simhash
-        """
+    def remove(self, simhash):
+        """remove the simhash from the storage"""
         assert simhash.f == self.f
 
+        v = '%x' % simhash.value  # format to hex
+        if self.with_id:
+            self.hash2id.remove(v, 0)
         for key in self.get_keys(simhash):
-            v = '%x,%s' % (simhash.value, obj_id)
-            self.storage.delete(key, v)
+            self.storage.remove(key, v)
 
 
 def test2():

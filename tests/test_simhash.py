@@ -108,11 +108,11 @@ class TestSimhashIndex(TestCase):
         dups = self.index.get_near_dups(s1)
         self.assertEqual(len(dups), 3)
 
-        self.index.delete('1', Simhash(self.data[1]))
+        self.index.remove(Simhash(self.data[1]))
         dups = self.index.get_near_dups(s1)
         self.assertEqual(len(dups), 2)
 
-        self.index.delete('1', Simhash(self.data[1]))
+        self.index.remove(Simhash(self.data[1]))
         dups = self.index.get_near_dups(s1)
         self.assertEqual(len(dups), 2)
 
@@ -123,6 +123,23 @@ class TestSimhashIndex(TestCase):
         self.index.add('1', Simhash(self.data[1]))
         dups = self.index.get_near_dups(s1)
         self.assertEqual(len(dups), 3)
+
+
+def console_test():
+    from simhash import Simhash, SimhashIndex
+    data = {
+        1: 'How are you? I Am fine. blar blar blar blar blar Thanks.',
+        2: 'How are you i am fine. blar blar blar blar blar than',
+        3: 'This is simhash test.',
+        4: 'How are you i am fine. blar blar blar blar blar thank1',
+    }
+    objs = [(str(k), Simhash(v)) for k, v in data.items()]
+    index = SimhashIndex(objs, k=10)
+    s1 = Simhash(
+        u'How are you i am fine.ablar ablar xyz blar blar blar blar blar blar blar thank')
+    dups = index.get_near_dups(s1)
+    dups = index.get_near_dups2(s1, 5)
+    index.remove(s1)
 
 
 if __name__ == '__main__':
