@@ -2,11 +2,45 @@ simhash
 ===========
 
 This is a Python implementation of [Simhash](http://www.wwwconference.org/www2007/papers/paper215.pdf).
+forked from leonsim/simhash
 
-## Getting Started
+## 有何不同
+本项目fork自leonsim/simhash，
+1. 加入了jieba中文分词，tf_idf提取。
+2. 添加Storage类解耦后台存储，目前实现了内存和Redis两种存储方式。
+3. 修改了存储方式，原代码的存储结构为{key:{"simhash,obj_id",...},...}，这样存在两个问题
+    1. 由于每个simhash都会因为key的组合而重复存储n份（n等于simhash被拆分的份数），
+    所以这样存储id会产生n倍冗余，计算时在每个bucket都要循环拆分hash值和id也会增加计算量
+    2. 实际应用中，或许根本不需要返回id，即使要返回，也可以单独建一张表存储simhash和obj_id的映射关系。<br>
+    所以，本项目存储拆分为两部分{key:{simhash,...}...}和{simhash:obj_id,...}
+4. 拆分了key_func脚本，解耦get_keys方法，按照[Simhash](http://www.wwwconference.org/www2007/papers/paper215.pdf)
+论文中提到的方法优化了get_keys函数，目前只实现了二次拆分key的方法，也就是论文中"16 tables"的部分。
 
-<http://leons.im/posts/a-python-implementation-of-simhash-algorithm/>
+## 问题与优化
+大部分情况中，都会遇到两种语料，一种是普通文本（如用户发帖、邮件、新闻等），一种是短文本（比如：评论，贴吧回复），
 
-## Build Status
+在实际应用中，在50w的普通文本下测试，
+人工标注后，发现普通文本距离在1-3查重准确率接近100%，但是4-7这部分也有40%的近似文本，
+需要人工审核，不能像论文中那样直接将阈值k设置为3。
 
-[![Build Status](https://travis-ci.org/leonsim/simhash.png?branch=master)](https://travis-ci.org/leonsim/simhash)
+然而整个服务的计算量和响应速度是随着k呈指数增长的，k=3，计算耗时为30μs，
+而k=5时，耗时就已经达到了14ms，k=11时达到1s。
+所以需要优化生成key的方法，这也是本项目的重点。
+
+在短文本中，由于文本较短，变化一个词，相对整篇文本而言，就已经有了很大的变化，
+会对simhash值产生更大的影响，其阈值范围更高。
+
+实际标注发现，距离在1-5是准确率接近90%，但是在7-11这部分也有40%的近似文本，而这时，服务的响应速度已经达到1s。
+而且短文本相比普通文本数据量通常更大，比如一篇文章会有好几条评论，如果数据量翻一倍，也就是100w，响应速度将会升至2s。
+
+这种情况下，使用二次拆分key的方法，速度不仅没有提升，反而下降了。
+因为出现了数据倾斜，试验发现，采用二次拆分后，大部分bucket中的数据量都有巨幅下降，
+但是依旧有部分（约25%）的bucket中的数据量居高不下，甚至上升了一点。
+（并不会如论文中设想的那样均匀分布，当然如果按照论文将k=3的话，二次拆分不会出现数据倾斜，查询效率确实是有巨大提升。
+本人亲测，50w样本，在k=8时是一个临界点，此时数据尚未倾斜，响应速度从200ms降低至130ms, 而k=9时，响应速度从416ms上升至442ms）
+
+而大部分simhash值都会映射到这些big bucket中，
+而二次拆分本身会导致待查询的bucket数量是翻倍的，所以导致速度不升反降。
+对于数据倾斜这个问题，由于论文中使用场景使得k=3即可满足需求，所以并不会碰到这个问题，
+所以论文中似乎并有给出解决方案，如果有还望各位gay指点迷津。
+总而言之，key_func部分将会是一个很有意思的提升点，各位gay友如果有什么好主意，欢迎评论，若能提交代码，更是感激不尽。
