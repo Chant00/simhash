@@ -201,6 +201,7 @@ class SimhashIndex(object):
                 d = simhash.distance(sim2)
                 if d <= self.k:
                     return int(obj_id), d
+        return None, None
 
     def get_near_dups(self, simhash):
         """find all near duplication under the distance tolerance k
