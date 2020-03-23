@@ -12,7 +12,7 @@ forked from leonsim/simhash
     1. 由于每个simhash都会因为key的组合而重复存储n份（n等于simhash被拆分的份数），
     所以这样存储id会产生n倍冗余，计算时在每个bucket都要循环拆分hash值和id也会增加计算量
     2. 实际应用中，或许根本不需要返回id，即使要返回，也可以单独建一张表存储simhash和obj_id的映射关系。<br>
-    所以，本项目存储拆分为两部分{key:{simhash,...}...}和{simhash:obj_id,...}
+    所以，本项目存储拆分为两部分simhash的主要存储后台{key:{simhash,...}...}和hash值与id的映射表{simhash:obj_id,...}
 4. 拆分了key_func脚本，解耦get_keys方法，按照[Simhash](http://www.wwwconference.org/www2007/papers/paper215.pdf)
 论文中提到的方法优化了get_keys函数，目前只实现了二次拆分key的方法，也就是论文中"16 tables"的部分。
 
