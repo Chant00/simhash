@@ -5,7 +5,7 @@ This is a Python implementation of [Simhash](http://www.wwwconference.org/www200
 forked from leonsim/simhash
 
 ## 有何不同
-本项目fork自leonsim/simhash，
+本项目fork自[leonsim/simhash](https://github.com/leonsim/simhash)，
 1. 加入了jieba中文分词，tf_idf提取。
 2. 添加Storage类解耦后台存储，目前实现了内存和Redis两种存储方式。
 3. 修改了存储方式，原代码的存储结构为{key:{"simhash,obj_id",...},...}，这样存在两个问题
